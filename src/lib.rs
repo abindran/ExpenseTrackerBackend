@@ -3,6 +3,9 @@ pub mod validation;
 
 // WASM-only: Cloudflare Worker runtime, D1 bindings, HTTP routing, and Clerk auth
 #[cfg(target_arch = "wasm32")]
+mod cache;
+
+#[cfg(target_arch = "wasm32")]
 mod models;
 
 #[cfg(target_arch = "wasm32")]

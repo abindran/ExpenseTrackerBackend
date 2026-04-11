@@ -1,14 +1,37 @@
 name = "expense-tracker-api"
 main = "build/worker/shim.mjs"
-compatibility_date = "2024-01-01"
+compatibility_date = "2026-04-11"
 
 [build]
 command = "cargo install worker-build && worker-build --release"
 
+# ── Dev (default) ───────────────────────────────────────────────────────────
+
 [[d1_databases]]
+binding = "DB"
+database_name = "expense-tracker-db-dev"
+database_id = "9a2d7810-84f2-4d18-8c24-ecf686fbd474"
+
+[[kv_namespaces]]
+binding = "CACHE"
+id = "7218fea2e38f4fb48600a82f2858a458"
+
+[vars]
+ENVIRONMENT = "development"
+
+# ── Production (`wrangler deploy --env production`) ─────────────────────────
+
+[env.production]
+name = "expense-tracker-api"
+
+[[env.production.d1_databases]]
 binding = "DB"
 database_name = "expense-tracker-db"
 database_id = "2bff1b4f-bcaa-4b28-874c-bc1701295d1c"
 
-[vars]
-ENVIRONMENT = "development"
+[[env.production.kv_namespaces]]
+binding = "CACHE"
+id = "ba650296f5e0499ab66a99265cc383d8"
+
+[env.production.vars]
+ENVIRONMENT = "production"

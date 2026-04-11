@@ -2,6 +2,7 @@ use serde_json::json;
 use worker::wasm_bindgen::JsValue;
 use worker::*;
 
+use crate::cache::{self, Cache};
 use crate::models::*;
 use crate::validation;
 
@@ -19,23 +20,28 @@ fn error_response(msg: &str, status: u16) -> Result<Response> {
     json_response(&ApiResponse::<()>::err(msg.to_string()), status)
 }
 
+/// Return a pre-serialised JSON string straight from the KV cache.
+fn cached_json_hit(body: &str, status: u16) -> Result<Response> {
+    let headers = Headers::new();
+    headers.set("Content-Type", "application/json")?;
+    headers.set("Access-Control-Allow-Origin", "*")?;
+    headers.set("X-Cache", "HIT")?;
+    Ok(Response::ok(body)?.with_headers(headers).with_status(status))
+}
+
 // ── Clerk JWT verification ─────────────────────────────────────────────────
 //
-// Strategy (MVP):
-//   1. Base64-decode the JWT payload to read `sub` (Clerk user_id) and `exp`.
+// Strategy:
+//   1. Base64-decode the JWT payload to read `sub` (user_id), `sid`, and `exp`.
 //   2. Reject tokens whose `exp` is in the past.
-//   3. Verify the session is still active by calling Clerk's Backend API.
-//      This single HTTP call replaces all crypto crates and eliminates our
-//      own credential storage.
-//
-// TODO(production): Cache JWKS from Clerk, verify RS256 signature locally,
-//   and cache valid sessions in Cloudflare KV to avoid per-request API calls.
+//   3. Check KV cache for a previously verified session → skip Clerk API call.
+//   4. On cache miss, confirm the session via Clerk Backend API, then cache it.
 
-async fn verify_clerk_token(token: &str, clerk_secret: &str) -> Option<String> {
+/// Cheap JWT decode (no crypto) — returns (user_id, session_id).
+fn decode_jwt_claims(token: &str) -> Option<(String, String)> {
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine;
 
-    // 1. Decode JWT payload (middle segment)
     let parts: Vec<&str> = token.splitn(3, '.').collect();
     if parts.len() != 3 {
         return None;
@@ -43,40 +49,47 @@ async fn verify_clerk_token(token: &str, clerk_secret: &str) -> Option<String> {
     let payload_bytes = URL_SAFE_NO_PAD.decode(parts[1]).ok()?;
     let payload: serde_json::Value = serde_json::from_slice(&payload_bytes).ok()?;
 
-    // 2. Check expiry using JS Date (WASM has no std time)
     let exp = payload["exp"].as_i64()?;
     let now_ms = js_sys::Date::now() as i64;
     if exp * 1000 < now_ms {
-        return None; // Token expired
+        return None;
     }
 
-    // 3. Extract user_id and session_id
     let user_id = payload["sub"].as_str()?.to_string();
     let session_id = payload["sid"].as_str().unwrap_or(&user_id).to_string();
+    Some((user_id, session_id))
+}
 
-    // 4. Confirm session is active via Clerk Backend API
+/// Calls Clerk Backend API to check if the session is still active.
+async fn verify_clerk_session(session_id: &str, clerk_secret: &str) -> bool {
     let url = format!("https://api.clerk.com/v1/sessions/{}", session_id);
     let mut init = RequestInit::new();
     init.with_method(Method::Get);
-    let mut headers = Headers::new();
-    headers.set("Authorization", &format!("Bearer {}", clerk_secret)).ok()?;
+    let headers = Headers::new();
+    if headers.set("Authorization", &format!("Bearer {}", clerk_secret)).is_err() {
+        return false;
+    }
     init.with_headers(headers);
 
-    let req = Request::new_with_init(&url, &init).ok()?;
-    let mut resp = Fetch::Request(req).send().await.ok()?;
-
+    let req = match Request::new_with_init(&url, &init) {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
+    let mut resp = match Fetch::Request(req).send().await {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
     if resp.status_code() != 200 {
-        return None;
+        return false;
     }
-    let body: serde_json::Value = resp.json().await.ok()?;
-    if body["status"].as_str() != Some("active") {
-        return None;
-    }
-
-    Some(user_id)
+    let body: serde_json::Value = match resp.json().await {
+        Ok(b) => b,
+        Err(_) => return false,
+    };
+    body["status"].as_str() == Some("active")
 }
 
-/// Extracts the Bearer token and verifies it with Clerk.
+/// Extracts the Bearer token, verifies it (cached or via Clerk API).
 /// Returns `Ok(clerk_user_id)` or an HTTP 401 error.
 async fn authenticate(
     req: &Request,
@@ -100,9 +113,31 @@ async fn authenticate(
         .strip_prefix("Bearer ")
         .ok_or_else(|| error_response("Missing Authorization header", 401).unwrap())?;
 
-    verify_clerk_token(token, &secret)
-        .await
-        .ok_or_else(|| error_response("Invalid or expired session", 401).unwrap())
+    // 1. Decode JWT (cheap base64, no crypto)
+    let (user_id, session_id) = decode_jwt_claims(token)
+        .ok_or_else(|| error_response("Invalid or expired token", 401).unwrap())?;
+
+    let cache = Cache::new(env);
+    let ckey = cache::session_key(&session_id);
+
+    // 2. Check KV session cache
+    if let Some(ref c) = cache {
+        if let Some(cached_uid) = c.get(&ckey).await {
+            return Ok(cached_uid);
+        }
+    }
+
+    // 3. Cache miss — call Clerk API
+    if !verify_clerk_session(&session_id, &secret).await {
+        return Err(error_response("Invalid or expired session", 401).unwrap());
+    }
+
+    // 4. Store in cache for subsequent requests
+    if let Some(ref c) = cache {
+        c.put(&ckey, &user_id, cache::ttl::SESSION).await;
+    }
+
+    Ok(user_id)
 }
 
 // ── Health ─────────────────────────────────────────────────────────────────
@@ -132,6 +167,11 @@ pub async fn upsert_user(mut req: Request, ctx: RouteContext<()>) -> Result<Resp
     .run()
     .await?;
 
+    // Invalidate profile cache
+    if let Some(c) = Cache::new(&ctx.env) {
+        c.delete(&cache::profile_key(&user_id)).await;
+    }
+
     json_response(&ApiResponse::ok(json!({"id": user_id, "default_currency": currency})), 200)
 }
 
@@ -140,6 +180,16 @@ pub async fn get_me(req: Request, ctx: RouteContext<()>) -> Result<Response> {
         Ok(id) => id,
         Err(r) => return Ok(r),
     };
+    let cache = Cache::new(&ctx.env);
+    let ckey = cache::profile_key(&user_id);
+
+    // Cache hit
+    if let Some(ref c) = cache {
+        if let Some(hit) = c.get(&ckey).await {
+            return cached_json_hit(&hit, 200);
+        }
+    }
+
     let db = ctx.env.d1("DB")?;
     match db
         .prepare("SELECT * FROM users WHERE id = ?1")
@@ -147,7 +197,13 @@ pub async fn get_me(req: Request, ctx: RouteContext<()>) -> Result<Response> {
         .first::<User>(None)
         .await?
     {
-        Some(u) => json_response(&ApiResponse::ok(u), 200),
+        Some(u) => {
+            let resp = ApiResponse::ok(u);
+            if let (Some(ref c), Ok(json)) = (&cache, serde_json::to_string(&resp)) {
+                c.put(&ckey, &json, cache::ttl::PROFILE).await;
+            }
+            json_response(&resp, 200)
+        }
         None => error_response("User not found", 404),
     }
 }
@@ -159,6 +215,15 @@ pub async fn list_expenses(req: Request, ctx: RouteContext<()>) -> Result<Respon
         Ok(id) => id,
         Err(r) => return Ok(r),
     };
+    let cache = Cache::new(&ctx.env);
+    let ckey = cache::expenses_key(&user_id);
+
+    if let Some(ref c) = cache {
+        if let Some(hit) = c.get(&ckey).await {
+            return cached_json_hit(&hit, 200);
+        }
+    }
+
     let db = ctx.env.d1("DB")?;
     let expenses: Vec<Expense> = db
         .prepare(
@@ -168,7 +233,12 @@ pub async fn list_expenses(req: Request, ctx: RouteContext<()>) -> Result<Respon
         .all()
         .await?
         .results()?;
-    json_response(&ApiResponse::ok(expenses), 200)
+
+    let resp = ApiResponse::ok(expenses);
+    if let (Some(ref c), Ok(json)) = (&cache, serde_json::to_string(&resp)) {
+        c.put(&ckey, &json, cache::ttl::EXPENSES).await;
+    }
+    json_response(&resp, 200)
 }
 
 pub async fn create_expense(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
@@ -199,7 +269,7 @@ pub async fn create_expense(mut req: Request, ctx: RouteContext<()>) -> Result<R
     )
     .bind(&[
         id.clone().into(),
-        user_id.into(),
+        user_id.clone().into(),
         body.amount_cents.into(),
         currency.into(),
         body.category_id
@@ -220,6 +290,11 @@ pub async fn create_expense(mut req: Request, ctx: RouteContext<()>) -> Result<R
                 .run()
                 .await?;
         }
+    }
+
+    // Invalidate expense list cache
+    if let Some(c) = Cache::new(&ctx.env) {
+        c.delete(&cache::expenses_key(&user_id)).await;
     }
 
     json_response(&ApiResponse::ok(json!({"id": id})), 201)
@@ -279,10 +354,15 @@ pub async fn update_expense(mut req: Request, ctx: RouteContext<()>) -> Result<R
         body.description.as_deref().map(JsValue::from_str).unwrap_or(JsValue::NULL).into(),
         body.date.as_deref().map(JsValue::from_str).unwrap_or(JsValue::NULL).into(),
         id.clone().into(),
-        user_id.into(),
+        user_id.clone().into(),
     ])?
     .run()
     .await?;
+
+    // Invalidate expense list cache
+    if let Some(c) = Cache::new(&ctx.env) {
+        c.delete(&cache::expenses_key(&user_id)).await;
+    }
 
     json_response(&ApiResponse::ok(json!({"updated": true})), 200)
 }
@@ -299,9 +379,13 @@ pub async fn delete_expense(req: Request, ctx: RouteContext<()>) -> Result<Respo
          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
          WHERE id = ?1 AND user_id = ?2",
     )
-    .bind(&[id.into(), user_id.into()])?
+    .bind(&[id.into(), user_id.clone().into()])?
     .run()
     .await?;
+
+    if let Some(c) = Cache::new(&ctx.env) {
+        c.delete(&cache::expenses_key(&user_id)).await;
+    }
     json_response(&ApiResponse::ok(json!({"deleted": true})), 200)
 }
 
@@ -312,6 +396,15 @@ pub async fn list_categories(req: Request, ctx: RouteContext<()>) -> Result<Resp
         Ok(id) => id,
         Err(r) => return Ok(r),
     };
+    let cache = Cache::new(&ctx.env);
+    let ckey = cache::categories_key(&user_id);
+
+    if let Some(ref c) = cache {
+        if let Some(hit) = c.get(&ckey).await {
+            return cached_json_hit(&hit, 200);
+        }
+    }
+
     let db = ctx.env.d1("DB")?;
     let cats: Vec<Category> = db
         .prepare(
@@ -321,7 +414,12 @@ pub async fn list_categories(req: Request, ctx: RouteContext<()>) -> Result<Resp
         .all()
         .await?
         .results()?;
-    json_response(&ApiResponse::ok(cats), 200)
+
+    let resp = ApiResponse::ok(cats);
+    if let (Some(ref c), Ok(json)) = (&cache, serde_json::to_string(&resp)) {
+        c.put(&ckey, &json, cache::ttl::CATEGORIES).await;
+    }
+    json_response(&resp, 200)
 }
 
 pub async fn create_category(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
@@ -343,9 +441,13 @@ pub async fn create_category(mut req: Request, ctx: RouteContext<()>) -> Result<
     let db = ctx.env.d1("DB")?;
     let id = uuid::Uuid::new_v4().to_string();
     db.prepare("INSERT INTO categories (id, user_id, name, emoji) VALUES (?1, ?2, ?3, ?4)")
-        .bind(&[id.clone().into(), user_id.into(), body.name.into(), body.emoji.into()])?
+        .bind(&[id.clone().into(), user_id.clone().into(), body.name.into(), body.emoji.into()])?
         .run()
         .await?;
+
+    if let Some(c) = Cache::new(&ctx.env) {
+        c.delete(&cache::categories_key(&user_id)).await;
+    }
     json_response(&ApiResponse::ok(json!({"id": id})), 201)
 }
 
@@ -371,10 +473,14 @@ pub async fn update_category(mut req: Request, ctx: RouteContext<()>) -> Result<
         body.name.as_deref().map(JsValue::from_str).unwrap_or(JsValue::NULL).into(),
         body.emoji.as_deref().map(JsValue::from_str).unwrap_or(JsValue::NULL).into(),
         id.into(),
-        user_id.into(),
+        user_id.clone().into(),
     ])?
     .run()
     .await?;
+
+    if let Some(c) = Cache::new(&ctx.env) {
+        c.delete(&cache::categories_key(&user_id)).await;
+    }
     json_response(&ApiResponse::ok(json!({"updated": true})), 200)
 }
 
@@ -390,9 +496,13 @@ pub async fn delete_category(req: Request, ctx: RouteContext<()>) -> Result<Resp
          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
          WHERE id = ?1 AND user_id = ?2",
     )
-    .bind(&[id.into(), user_id.into()])?
+    .bind(&[id.into(), user_id.clone().into()])?
     .run()
     .await?;
+
+    if let Some(c) = Cache::new(&ctx.env) {
+        c.delete(&cache::categories_key(&user_id)).await;
+    }
     json_response(&ApiResponse::ok(json!({"deleted": true})), 200)
 }
 
@@ -403,6 +513,15 @@ pub async fn list_tags(req: Request, ctx: RouteContext<()>) -> Result<Response> 
         Ok(id) => id,
         Err(r) => return Ok(r),
     };
+    let cache = Cache::new(&ctx.env);
+    let ckey = cache::tags_key(&user_id);
+
+    if let Some(ref c) = cache {
+        if let Some(hit) = c.get(&ckey).await {
+            return cached_json_hit(&hit, 200);
+        }
+    }
+
     let db = ctx.env.d1("DB")?;
     let tags: Vec<Tag> = db
         .prepare("SELECT * FROM tags WHERE user_id = ?1 AND soft_deleted = 0 ORDER BY name ASC")
@@ -410,7 +529,12 @@ pub async fn list_tags(req: Request, ctx: RouteContext<()>) -> Result<Response> 
         .all()
         .await?
         .results()?;
-    json_response(&ApiResponse::ok(tags), 200)
+
+    let resp = ApiResponse::ok(tags);
+    if let (Some(ref c), Ok(json)) = (&cache, serde_json::to_string(&resp)) {
+        c.put(&ckey, &json, cache::ttl::TAGS).await;
+    }
+    json_response(&resp, 200)
 }
 
 pub async fn create_tag(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
@@ -428,9 +552,13 @@ pub async fn create_tag(mut req: Request, ctx: RouteContext<()>) -> Result<Respo
     let db = ctx.env.d1("DB")?;
     let id = uuid::Uuid::new_v4().to_string();
     db.prepare("INSERT INTO tags (id, user_id, name) VALUES (?1, ?2, ?3)")
-        .bind(&[id.clone().into(), user_id.into(), body.name.into()])?
+        .bind(&[id.clone().into(), user_id.clone().into(), body.name.into()])?
         .run()
         .await?;
+
+    if let Some(c) = Cache::new(&ctx.env) {
+        c.delete(&cache::tags_key(&user_id)).await;
+    }
     json_response(&ApiResponse::ok(json!({"id": id})), 201)
 }
 
@@ -446,9 +574,13 @@ pub async fn delete_tag(req: Request, ctx: RouteContext<()>) -> Result<Response>
          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
          WHERE id = ?1 AND user_id = ?2",
     )
-    .bind(&[id.into(), user_id.into()])?
+    .bind(&[id.into(), user_id.clone().into()])?
     .run()
     .await?;
+
+    if let Some(c) = Cache::new(&ctx.env) {
+        c.delete(&cache::tags_key(&user_id)).await;
+    }
     json_response(&ApiResponse::ok(json!({"deleted": true})), 200)
 }
 
@@ -481,10 +613,25 @@ pub async fn sync(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
 
     let tags: Vec<Tag> = db
         .prepare("SELECT * FROM tags WHERE user_id = ?1 AND updated_at > ?2")
-        .bind(&[user_id.into(), body.last_synced_at.into()])?
+        .bind(&[user_id.clone().into(), body.last_synced_at.into()])?
         .all()
         .await?
         .results()?;
+
+    // Invalidate list caches so subsequent GETs reflect synced state
+    if !expenses.is_empty() || !categories.is_empty() || !tags.is_empty() {
+        if let Some(c) = Cache::new(&ctx.env) {
+            if !expenses.is_empty() {
+                c.delete(&cache::expenses_key(&user_id)).await;
+            }
+            if !categories.is_empty() {
+                c.delete(&cache::categories_key(&user_id)).await;
+            }
+            if !tags.is_empty() {
+                c.delete(&cache::tags_key(&user_id)).await;
+            }
+        }
+    }
 
     json_response(
         &ApiResponse::ok(SyncResponse {
