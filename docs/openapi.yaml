@@ -1,0 +1,839 @@
+openapi: "3.1.0"
+info:
+  title: Expense Tracker API
+  description: REST API for the Expense Tracker app, running on Cloudflare Workers (Rust/WASM). All authenticated endpoints require a Clerk JWT Bearer token.
+  version: "0.1.0"
+  contact:
+    name: PaxAutomata
+
+servers:
+  - url: http://localhost:8787
+    description: Local dev (wrangler dev)
+
+security:
+  - clerkBearerAuth: []
+
+tags:
+  - name: Health
+    description: Server health check
+  - name: Users
+    description: User profile management (Clerk-linked)
+  - name: Expenses
+    description: Expense CRUD
+  - name: Categories
+    description: Category CRUD
+  - name: Tags
+    description: Tag CRUD
+  - name: Sync
+    description: Incremental sync for offline-first clients
+
+paths:
+  # ── Health ──────────────────────────────────────────────────────
+
+  /health:
+    get:
+      operationId: health
+      tags: [Health]
+      summary: Health check
+      security: []
+      responses:
+        "200":
+          description: Server is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  auth:
+                    type: string
+                    example: clerk
+
+  # ── Users ───────────────────────────────────────────────────────
+
+  /api/users/me:
+    post:
+      operationId: upsertUser
+      tags: [Users]
+      summary: Create or update current user profile
+      description: Called on first login to create user record, or to update currency preference. User ID is derived from the Clerk JWT.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpsertUserRequest"
+      responses:
+        "200":
+          description: User upserted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiResponse_UserSummary"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+    get:
+      operationId: getMe
+      tags: [Users]
+      summary: Get current user profile
+      responses:
+        "200":
+          description: User profile
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiResponse_User"
+          headers:
+            X-Cache:
+              $ref: "#/components/headers/X-Cache"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ── Expenses ────────────────────────────────────────────────────
+
+  /api/expenses:
+    get:
+      operationId: listExpenses
+      tags: [Expenses]
+      summary: List all expenses for the authenticated user
+      description: Returns non-deleted expenses ordered by date descending. Response may be served from KV cache.
+      responses:
+        "200":
+          description: Expense list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiResponse_ExpenseList"
+          headers:
+            X-Cache:
+              $ref: "#/components/headers/X-Cache"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+    post:
+      operationId: createExpense
+      tags: [Expenses]
+      summary: Create a new expense
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateExpenseRequest"
+      responses:
+        "201":
+          description: Expense created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiResponse_Id"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/expenses/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ResourceId"
+
+    get:
+      operationId: getExpense
+      tags: [Expenses]
+      summary: Get a single expense by ID
+      responses:
+        "200":
+          description: Expense detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiResponse_Expense"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+    put:
+      operationId: updateExpense
+      tags: [Expenses]
+      summary: Update an expense (partial update)
+      description: Only provided fields are updated. Omitted fields remain unchanged.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateExpenseRequest"
+      responses:
+        "200":
+          description: Expense updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiResponse_Updated"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+    delete:
+      operationId: deleteExpense
+      tags: [Expenses]
+      summary: Soft-delete an expense
+      responses:
+        "200":
+          description: Expense soft-deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiResponse_Deleted"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  # ── Categories ──────────────────────────────────────────────────
+
+  /api/categories:
+    get:
+      operationId: listCategories
+      tags: [Categories]
+      summary: List all categories for the authenticated user
+      responses:
+        "200":
+          description: Category list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiResponse_CategoryList"
+          headers:
+            X-Cache:
+              $ref: "#/components/headers/X-Cache"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+    post:
+      operationId: createCategory
+      tags: [Categories]
+      summary: Create a new category
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateCategoryRequest"
+      responses:
+        "201":
+          description: Category created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiResponse_Id"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/categories/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ResourceId"
+
+    put:
+      operationId: updateCategory
+      tags: [Categories]
+      summary: Update a category (partial update)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateCategoryRequest"
+      responses:
+        "200":
+          description: Category updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiResponse_Updated"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+    delete:
+      operationId: deleteCategory
+      tags: [Categories]
+      summary: Soft-delete a category
+      responses:
+        "200":
+          description: Category soft-deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiResponse_Deleted"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  # ── Tags ────────────────────────────────────────────────────────
+
+  /api/tags:
+    get:
+      operationId: listTags
+      tags: [Tags]
+      summary: List all tags for the authenticated user
+      responses:
+        "200":
+          description: Tag list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiResponse_TagList"
+          headers:
+            X-Cache:
+              $ref: "#/components/headers/X-Cache"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+    post:
+      operationId: createTag
+      tags: [Tags]
+      summary: Create a new tag
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTagRequest"
+      responses:
+        "201":
+          description: Tag created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiResponse_Id"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/tags/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ResourceId"
+
+    delete:
+      operationId: deleteTag
+      tags: [Tags]
+      summary: Soft-delete a tag
+      responses:
+        "200":
+          description: Tag soft-deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiResponse_Deleted"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  # ── Sync ────────────────────────────────────────────────────────
+
+  /api/sync:
+    post:
+      operationId: sync
+      tags: [Sync]
+      summary: Incremental sync
+      description: Returns all expenses, categories, and tags updated after the given timestamp. Used by offline-first clients to catch up. Always hits D1 directly (bypasses cache) and invalidates stale cache entries.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SyncRequest"
+      responses:
+        "200":
+          description: Changed records since last sync
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiResponse_SyncResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+# ═══════════════════════════════════════════════════════════════════
+# Components
+# ═══════════════════════════════════════════════════════════════════
+
+components:
+
+  # ── Security ──────────────────────────────────────────────────
+
+  securitySchemes:
+    clerkBearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Clerk-issued JWT. The `sub` claim contains the user ID.
+
+  # ── Parameters ────────────────────────────────────────────────
+
+  parameters:
+    ResourceId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: UUIDv4 resource identifier
+
+  # ── Headers ───────────────────────────────────────────────────
+
+  headers:
+    X-Cache:
+      description: "HIT if response was served from KV cache"
+      schema:
+        type: string
+        enum: [HIT]
+
+  # ── Reusable Responses ────────────────────────────────────────
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid Bearer token
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiResponse_Error"
+          example:
+            success: false
+            data: null
+            error: "Invalid or expired session"
+
+    BadRequest:
+      description: Validation failed
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiResponse_Error"
+          example:
+            success: false
+            data: null
+            error: "Amount must be greater than zero"
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiResponse_Error"
+          example:
+            success: false
+            data: null
+            error: "Expense not found"
+
+    ServerError:
+      description: Server misconfiguration
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiResponse_Error"
+          example:
+            success: false
+            data: null
+            error: "Server misconfiguration: missing CLERK_SECRET_KEY"
+
+  # ── Schemas ───────────────────────────────────────────────────
+
+  schemas:
+
+    # ── Domain Models ─────────────────────────────────────────
+
+    User:
+      type: object
+      required: [id, default_currency, created_at]
+      properties:
+        id:
+          type: string
+          description: Clerk user ID
+          example: "user_2abc123"
+        default_currency:
+          type: string
+          example: "USD"
+        created_at:
+          type: string
+          format: date-time
+          example: "2026-04-12T10:30:00.000Z"
+
+    Expense:
+      type: object
+      required: [id, user_id, amount_cents, currency, description, date, soft_deleted, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+        amount_cents:
+          type: integer
+          format: int64
+          description: Amount in cents (always positive, max 100000000 = $1M)
+          example: 1599
+        currency:
+          type: string
+          description: ISO 4217 code
+          example: "USD"
+        category_id:
+          type: string
+          format: uuid
+          nullable: true
+        description:
+          type: string
+          example: "Coffee"
+        date:
+          type: string
+          format: date
+          example: "2026-04-12"
+        soft_deleted:
+          type: boolean
+        updated_at:
+          type: string
+          format: date-time
+
+    Category:
+      type: object
+      required: [id, user_id, name, emoji, soft_deleted, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+        name:
+          type: string
+          example: "Food"
+        emoji:
+          type: string
+          example: "🍔"
+        soft_deleted:
+          type: boolean
+        updated_at:
+          type: string
+          format: date-time
+
+    Tag:
+      type: object
+      required: [id, user_id, name, soft_deleted, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+        name:
+          type: string
+          example: "recurring"
+        soft_deleted:
+          type: boolean
+        updated_at:
+          type: string
+          format: date-time
+
+    SyncResponse:
+      type: object
+      required: [expenses, categories, tags, server_time]
+      properties:
+        expenses:
+          type: array
+          items:
+            $ref: "#/components/schemas/Expense"
+        categories:
+          type: array
+          items:
+            $ref: "#/components/schemas/Category"
+        tags:
+          type: array
+          items:
+            $ref: "#/components/schemas/Tag"
+        server_time:
+          type: string
+          format: date-time
+          description: Server timestamp to use as `last_synced_at` in next sync call
+
+    # ── Request Bodies ────────────────────────────────────────
+
+    UpsertUserRequest:
+      type: object
+      properties:
+        default_currency:
+          type: string
+          description: ISO 4217 currency code (defaults to USD)
+          example: "EUR"
+
+    CreateExpenseRequest:
+      type: object
+      required: [amount_cents, date]
+      properties:
+        amount_cents:
+          type: integer
+          format: int64
+          minimum: 1
+          maximum: 100000000
+          description: Amount in cents
+          example: 1599
+        currency:
+          type: string
+          description: ISO 4217 code (defaults to USD)
+          example: "USD"
+        category_id:
+          type: string
+          format: uuid
+          nullable: true
+        description:
+          type: string
+          maxLength: 500
+          example: "Morning coffee"
+        date:
+          type: string
+          format: date
+          example: "2026-04-12"
+        tag_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+          description: Tag IDs to associate with this expense
+
+    UpdateExpenseRequest:
+      type: object
+      properties:
+        amount_cents:
+          type: integer
+          format: int64
+          minimum: 1
+          maximum: 100000000
+        currency:
+          type: string
+        category_id:
+          type: string
+          format: uuid
+          nullable: true
+        description:
+          type: string
+          maxLength: 500
+        date:
+          type: string
+          format: date
+        tag_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+
+    CreateCategoryRequest:
+      type: object
+      required: [name, emoji]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          example: "Food"
+        emoji:
+          type: string
+          minLength: 1
+          example: "🍔"
+
+    UpdateCategoryRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        emoji:
+          type: string
+          minLength: 1
+
+    CreateTagRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          example: "recurring"
+
+    SyncRequest:
+      type: object
+      required: [last_synced_at]
+      properties:
+        last_synced_at:
+          type: string
+          format: date-time
+          description: ISO 8601 timestamp from previous sync's `server_time`
+          example: "2026-04-11T00:00:00.000Z"
+
+    # ── API Envelope ──────────────────────────────────────────
+
+    ApiResponse_Error:
+      type: object
+      required: [success]
+      properties:
+        success:
+          type: boolean
+          const: false
+        data:
+          nullable: true
+        error:
+          type: string
+
+    ApiResponse_Id:
+      type: object
+      required: [success, data]
+      properties:
+        success:
+          type: boolean
+          const: true
+        data:
+          type: object
+          required: [id]
+          properties:
+            id:
+              type: string
+              format: uuid
+        error:
+          nullable: true
+
+    ApiResponse_Updated:
+      type: object
+      required: [success, data]
+      properties:
+        success:
+          type: boolean
+          const: true
+        data:
+          type: object
+          properties:
+            updated:
+              type: boolean
+              const: true
+        error:
+          nullable: true
+
+    ApiResponse_Deleted:
+      type: object
+      required: [success, data]
+      properties:
+        success:
+          type: boolean
+          const: true
+        data:
+          type: object
+          properties:
+            deleted:
+              type: boolean
+              const: true
+        error:
+          nullable: true
+
+    ApiResponse_User:
+      type: object
+      required: [success, data]
+      properties:
+        success:
+          type: boolean
+          const: true
+        data:
+          $ref: "#/components/schemas/User"
+        error:
+          nullable: true
+
+    ApiResponse_UserSummary:
+      type: object
+      required: [success, data]
+      properties:
+        success:
+          type: boolean
+          const: true
+        data:
+          type: object
+          required: [id, default_currency]
+          properties:
+            id:
+              type: string
+            default_currency:
+              type: string
+        error:
+          nullable: true
+
+    ApiResponse_Expense:
+      type: object
+      required: [success, data]
+      properties:
+        success:
+          type: boolean
+          const: true
+        data:
+          $ref: "#/components/schemas/Expense"
+        error:
+          nullable: true
+
+    ApiResponse_ExpenseList:
+      type: object
+      required: [success, data]
+      properties:
+        success:
+          type: boolean
+          const: true
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Expense"
+        error:
+          nullable: true
+
+    ApiResponse_CategoryList:
+      type: object
+      required: [success, data]
+      properties:
+        success:
+          type: boolean
+          const: true
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Category"
+        error:
+          nullable: true
+
+    ApiResponse_TagList:
+      type: object
+      required: [success, data]
+      properties:
+        success:
+          type: boolean
+          const: true
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Tag"
+        error:
+          nullable: true
+
+    ApiResponse_SyncResponse:
+      type: object
+      required: [success, data]
+      properties:
+        success:
+          type: boolean
+          const: true
+        data:
+          $ref: "#/components/schemas/SyncResponse"
+        error:
+          nullable: true
