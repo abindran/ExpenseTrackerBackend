@@ -82,16 +82,46 @@ Authenticated endpoints require a `Bearer <clerk-jwt>` header.
 
 ## Build & Test
 
-```sh
-# Run native tests (validation module — no WASM needed)
-cargo test
+### Build
 
+```sh
 # Check WASM compilation without a full build
 cargo check --target wasm32-unknown-unknown
 
 # Full WASM build (outputs to build/worker/shim.mjs)
 worker-build --release
 ```
+
+### Unit Tests
+
+The `validation` module compiles natively, so tests run without WASM:
+
+```sh
+cargo test
+```
+
+This runs 46 tests covering all validation functions (amounts, dates, currencies, names, emojis, descriptions, emails, passwords) including boundary and edge cases.
+
+### Integration Tests
+
+`tests/integration.sh` is a curl-based script that hits a running dev server. Start the server first, then run the tests:
+
+```sh
+# Terminal 1 — start the dev server
+npx wrangler dev
+
+# Terminal 2 — run integration tests
+./tests/integration.sh
+```
+
+To test authenticated endpoints, export a valid Clerk JWT before running:
+
+```sh
+export CLERK_JWT="your-clerk-jwt-token"
+./tests/integration.sh
+```
+
+Without `CLERK_JWT`, only unauthenticated tests (health check, 401 responses) will run.
 
 ## Deploy
 

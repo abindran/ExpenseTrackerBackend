@@ -1,12 +1,10 @@
 #!/bin/bash
-# Build and open the OpenAPI spec as interactive HTML docs
+# Preview API docs — Swagger UI with interactive "Try it out"
 # Usage: ./docs/preview.sh
 
 set -e
 cd "$(dirname "$0")/.."
 
-OUT="docs/index.html"
-echo "Building API docs..."
-npx @redocly/cli build-docs docs/openapi.yaml -o "$OUT"
-echo "Opening $OUT in browser..."
-open "$OUT"
+echo "Starting local server for Swagger UI..."
+echo "Open http://localhost:9000/docs/swagger.html"
+npx http-server . -p 9000 -o docs/swagger.html
