@@ -21,4 +21,5 @@ applyTo: "wrangler.toml"
 - D1 database: binding name `DB`
 - KV namespace: binding name `CACHE`
 - Secrets: `CLERK_SECRET_KEY`
+- Env vars: `ENVIRONMENT`, `ALLOWED_ORIGIN` (CORS origin — `*` for dev, specific domain for prod)
 - Adding a new binding? Add to both default and `[env.production]` sections

@@ -31,7 +31,7 @@ REST API for the Expense Tracker app — built with **Rust**, compiled to **WASM
 
 ```
 src/
-├── lib.rs          # Entry point, route registration
+├── lib.rs          # Entry point, route registration, CORS
 ├── routes.rs       # HTTP handlers, auth, D1 queries
 ├── models.rs       # Request/response structs (serde)
 ├── cache.rs        # KV cache wrapper with TTL helpers
@@ -39,7 +39,10 @@ src/
 migrations/         # D1 SQL schema migrations
 docs/
 ├── openapi.yaml    # OpenAPI 3.1 spec
-└── preview.sh      # Build & open API docs in browser
+├── swagger.html    # Swagger UI (interactive "Try it out")
+└── preview.sh      # Serve Swagger UI locally
+scripts/
+└── get-token.sh    # Fetch a Clerk JWT for local API testing
 .github/
 ├── copilot-instructions.md          # AI assistant context
 ├── instructions/                    # File-specific AI rules
@@ -69,7 +72,11 @@ npx wrangler d1 execute expense-tracker-db-dev \
 npx wrangler dev
 ```
 
-This starts a local server at `http://localhost:8787` using the **dev** D1 database and KV namespace.
+This starts a local server at `http://localhost:8787` using the **dev** D1 database and KV namespace. For verbose request/response logs:
+
+```sh
+npx wrangler dev --log-level debug
+```
 
 ### 4. Test an endpoint
 
@@ -154,6 +161,21 @@ Deploy:
 npx wrangler deploy --env production
 ```
 
+### Logs
+
+```sh
+# Local dev — logs print to the wrangler dev terminal automatically
+npx wrangler dev
+
+# Live tail of deployed dev Worker
+npx wrangler tail
+
+# Live tail of production Worker
+npx wrangler tail --env production
+```
+
+Use `console_log!("message")` in Rust code to emit custom log lines.
+
 ## Database Migrations
 
 Migrations live in `migrations/`. Each migration has an `up.sql` and `down.sql`.
@@ -172,13 +194,21 @@ npx wrangler d1 execute expense-tracker-db \
 
 The full OpenAPI 3.1 spec is at `docs/openapi.yaml`.
 
-To build and view it as interactive HTML docs:
+To view it as interactive Swagger UI with "Try it out":
 
 ```sh
 ./docs/preview.sh
 ```
 
-This generates `docs/index.html` using [Redocly](https://redocly.com/) and opens it in your browser.
+This starts a local server at `http://localhost:9000/docs/swagger.html`.
+
+To get a Clerk JWT for testing authenticated endpoints:
+
+```sh
+./scripts/get-token.sh
+```
+
+Paste the output into Swagger UI's **Authorize** dialog.
 
 ## API Overview
 
@@ -198,6 +228,10 @@ All endpoints (except `/health`) require a Clerk JWT in the `Authorization: Bear
 | POST | `/api/categories` | Create category |
 | PUT | `/api/categories/:id` | Update category |
 | DELETE | `/api/categories/:id` | Soft-delete category |
+| GET | `/api/tags` | List tags |
+| POST | `/api/tags` | Create tag |
+| DELETE | `/api/tags/:id` | Soft-delete tag |
+| POST | `/api/sync` | Incremental sync |
 | GET | `/api/tags` | List tags |
 | POST | `/api/tags` | Create tag |
 | DELETE | `/api/tags/:id` | Soft-delete tag |

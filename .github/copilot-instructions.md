@@ -8,7 +8,7 @@ Rust API running on Cloudflare Workers, compiled to WASM via `worker-build`.
 - **Database**: Cloudflare D1 (SQLite-based), bound as `DB` in wrangler.toml
 - **Cache**: Cloudflare KV, bound as `CACHE` — `src/cache.rs` wraps it with TTL helpers
 - **Auth**: Clerk JWT — base64-decoded, then verified via Clerk Backend API (cached in KV)
-- **Entry point**: `src/lib.rs` → routes registered in `#[event(fetch)]` handler
+- **Entry point**: `src/lib.rs` → routes registered in `#[event(fetch)]` handler, CORS applied centrally
 
 ## Module Layout
 
@@ -41,6 +41,7 @@ npx wrangler deploy --env production            # Deploy production
 - **Mutations invalidate cache** — every create/update/delete handler calls `cache.delete()` on the relevant key
 - **Errors use `ApiResponse<T>`** — `{ success: bool, data: Option<T>, error: Option<String> }`
 - **IDs are UUIDv4** — generated server-side via `uuid::Uuid::new_v4()`
+- **CORS is centralized in `lib.rs`** — `ALLOWED_ORIGIN` env var; preflight (OPTIONS) handled before routing; header injected on every response
 
 ## Database
 
@@ -59,3 +60,7 @@ npx wrangler d1 execute expense-tracker-db-dev --file=migrations/<name>/up.sql -
 ## Dependencies
 
 `worker` 0.8 (d1 feature), `serde`, `serde_json`, `chrono`, `uuid` (v4+js), `base64`. No other crates — keep it minimal.
+
+## Scripts
+
+- `scripts/get-token.sh` — fetches a Clerk JWT from `.dev.vars` for local API testing
