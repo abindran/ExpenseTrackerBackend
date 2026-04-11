@@ -60,7 +60,13 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .post_async("/api/sync", routes::sync)
         // Fallback
         .run(req, env)
-        .await?;
+        .await;
+
+    // Ensure CORS headers are set even on error responses
+    let mut response = match response {
+        Ok(resp) => resp,
+        Err(e) => Response::error(e.to_string(), 500)?,
+    };
 
     // Attach CORS origin to every response
     response
