@@ -171,6 +171,15 @@ mod tests {
     }
 
     #[test]
+    fn amount_boundary_at_max_is_valid() {
+        assert!(validate_amount_cents(MAX_AMOUNT_CENTS).is_ok());
+        assert_eq!(
+            validate_amount_cents(MAX_AMOUNT_CENTS + 1),
+            Err(ValidationError::AmountExceedsMaximum)
+        );
+    }
+
+    #[test]
     fn amount_zero_is_invalid() {
         assert_eq!(
             validate_amount_cents(0),
@@ -194,6 +203,18 @@ mod tests {
     fn amount_over_maximum_is_invalid() {
         assert_eq!(
             validate_amount_cents(MAX_AMOUNT_CENTS + 1),
+            Err(ValidationError::AmountExceedsMaximum)
+        );
+    }
+
+    #[test]
+    fn amount_extreme_values() {
+        assert_eq!(
+            validate_amount_cents(i64::MIN),
+            Err(ValidationError::AmountNotPositive)
+        );
+        assert_eq!(
+            validate_amount_cents(i64::MAX),
             Err(ValidationError::AmountExceedsMaximum)
         );
     }
@@ -251,6 +272,39 @@ mod tests {
         );
     }
 
+    #[test]
+    fn date_empty_string_is_rejected() {
+        assert_eq!(validate_date(""), Err(ValidationError::InvalidDateFormat));
+    }
+
+    #[test]
+    fn date_day_zero_is_rejected() {
+        assert_eq!(
+            validate_date("2024-01-00"),
+            Err(ValidationError::InvalidDateFormat)
+        );
+    }
+
+    #[test]
+    fn date_day_32_is_rejected() {
+        assert_eq!(
+            validate_date("2024-01-32"),
+            Err(ValidationError::InvalidDateFormat)
+        );
+    }
+
+    #[test]
+    fn date_leading_trailing_spaces_rejected() {
+        assert_eq!(
+            validate_date(" 2024-01-15"),
+            Err(ValidationError::InvalidDateFormat)
+        );
+        assert_eq!(
+            validate_date("2024-01-15 "),
+            Err(ValidationError::InvalidDateFormat)
+        );
+    }
+
     // ── Currency validation ──────────────────────────────────────────────────
 
     #[test]
@@ -260,6 +314,13 @@ mod tests {
         assert!(validate_currency("GBP").is_ok());
         assert!(validate_currency("JPY").is_ok());
         assert!(validate_currency("INR").is_ok());
+    }
+
+    #[test]
+    fn all_supported_currencies_are_valid() {
+        for code in super::SUPPORTED_CURRENCIES {
+            assert!(validate_currency(code).is_ok(), "Expected {} to be valid", code);
+        }
     }
 
     #[test]
@@ -288,6 +349,13 @@ mod tests {
     }
 
     #[test]
+    fn unicode_names_are_accepted() {
+        assert!(validate_name("食品").is_ok());
+        assert!(validate_name("Essen & Trinken").is_ok());
+        assert!(validate_name("カテゴリー").is_ok());
+    }
+
+    #[test]
     fn empty_name_is_rejected() {
         assert_eq!(validate_name(""), Err(ValidationError::NameEmpty));
         assert_eq!(validate_name("   "), Err(ValidationError::NameEmpty));
@@ -311,6 +379,21 @@ mod tests {
     }
 
     #[test]
+    fn description_at_boundary_is_valid() {
+        assert!(validate_description(&"x".repeat(500)).is_ok());
+    }
+
+    #[test]
+    fn description_unicode_counted_by_bytes() {
+        // Multi-byte chars: "é" is 2 bytes in UTF-8
+        let desc = "é".repeat(251); // 502 bytes
+        assert_eq!(
+            validate_description(&desc),
+            Err(ValidationError::DescriptionTooLong)
+        );
+    }
+
+    #[test]
     fn description_over_500_chars_is_rejected() {
         assert_eq!(
             validate_description(&"x".repeat(501)),
@@ -324,6 +407,12 @@ mod tests {
     fn non_empty_emoji_is_valid() {
         assert!(validate_emoji("☕").is_ok());
         assert!(validate_emoji("🍔").is_ok());
+    }
+
+    #[test]
+    fn multi_codepoint_emoji_is_valid() {
+        assert!(validate_emoji("👨‍👩‍👧‍👦").is_ok()); // family emoji (ZWJ sequence)
+        assert!(validate_emoji("🏳️‍🌈").is_ok());
     }
 
     #[test]
@@ -374,6 +463,58 @@ mod tests {
         );
     }
 
+    #[test]
+    fn email_leading_dot_in_local_is_rejected() {
+        assert_eq!(
+            validate_email(".user@example.com"),
+            Err(ValidationError::InvalidEmail)
+        );
+    }
+
+    #[test]
+    fn email_trailing_dot_in_local_is_rejected() {
+        assert_eq!(
+            validate_email("user.@example.com"),
+            Err(ValidationError::InvalidEmail)
+        );
+    }
+
+    #[test]
+    fn email_empty_string_is_rejected() {
+        assert_eq!(validate_email(""), Err(ValidationError::InvalidEmail));
+    }
+
+    #[test]
+    fn email_domain_leading_dot_is_rejected() {
+        assert_eq!(
+            validate_email("user@.example.com"),
+            Err(ValidationError::InvalidEmail)
+        );
+    }
+
+    #[test]
+    fn email_domain_trailing_dot_is_rejected() {
+        assert_eq!(
+            validate_email("user@example.com."),
+            Err(ValidationError::InvalidEmail)
+        );
+    }
+
+    #[test]
+    fn email_local_part_too_long_is_rejected() {
+        let long_local = "a".repeat(65);
+        assert_eq!(
+            validate_email(&format!("{}@example.com", long_local)),
+            Err(ValidationError::InvalidEmail)
+        );
+    }
+
+    #[test]
+    fn email_local_part_at_max_length_is_valid() {
+        let local = "a".repeat(64);
+        assert!(validate_email(&format!("{}@example.com", local)).is_ok());
+    }
+
     // ── Password validation ───────────────────────────────────────────────────
 
     #[test]
@@ -391,6 +532,66 @@ mod tests {
         assert_eq!(
             validate_password(""),
             Err(ValidationError::PasswordTooShort)
+        );
+    }
+
+    #[test]
+    fn password_exactly_8_chars_boundary() {
+        assert!(validate_password("12345678").is_ok());
+        assert_eq!(
+            validate_password("1234567"),
+            Err(ValidationError::PasswordTooShort)
+        );
+    }
+
+    #[test]
+    fn password_long_is_valid() {
+        assert!(validate_password(&"a".repeat(256)).is_ok());
+    }
+
+    // ── Display trait ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn error_display_messages() {
+        assert_eq!(
+            ValidationError::AmountNotPositive.to_string(),
+            "Amount must be greater than zero"
+        );
+        assert_eq!(
+            ValidationError::AmountExceedsMaximum.to_string(),
+            "Amount exceeds maximum of $1,000,000"
+        );
+        assert_eq!(
+            ValidationError::InvalidDateFormat.to_string(),
+            "Date must be in YYYY-MM-DD format"
+        );
+        assert_eq!(
+            ValidationError::InvalidCurrencyCode.to_string(),
+            "Unsupported currency code"
+        );
+        assert_eq!(
+            ValidationError::DescriptionTooLong.to_string(),
+            "Description must be 500 characters or fewer"
+        );
+        assert_eq!(
+            ValidationError::NameEmpty.to_string(),
+            "Name cannot be empty"
+        );
+        assert_eq!(
+            ValidationError::NameTooLong.to_string(),
+            "Name must be 100 characters or fewer"
+        );
+        assert_eq!(
+            ValidationError::EmojiEmpty.to_string(),
+            "Emoji cannot be empty"
+        );
+        assert_eq!(
+            ValidationError::InvalidEmail.to_string(),
+            "Invalid email address"
+        );
+        assert_eq!(
+            ValidationError::PasswordTooShort.to_string(),
+            "Password must be at least 8 characters"
         );
     }
 }
