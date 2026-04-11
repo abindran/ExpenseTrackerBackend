@@ -17,9 +17,25 @@ use worker::*;
 #[cfg(target_arch = "wasm32")]
 #[event(fetch)]
 async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
+    // Read allowed origin from env — use "*" for dev, specific domain for production
+    let allowed = env
+        .var("ALLOWED_ORIGIN")
+        .map(|v| v.to_string())
+        .unwrap_or_else(|_| "*".to_string());
+
+    // Handle CORS preflight
+    if req.method() == Method::Options {
+        let headers = Headers::new();
+        headers.set("Access-Control-Allow-Origin", &allowed)?;
+        headers.set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")?;
+        headers.set("Access-Control-Allow-Headers", "Content-Type, Authorization")?;
+        headers.set("Access-Control-Max-Age", "86400")?;
+        return Ok(Response::empty()?.with_headers(headers).with_status(204));
+    }
+
     let router = Router::new();
 
-    router
+    let mut response = router
         // Health
         .get_async("/health", routes::health)
         // User profile (first-login upsert)
@@ -44,5 +60,12 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .post_async("/api/sync", routes::sync)
         // Fallback
         .run(req, env)
-        .await
+        .await?;
+
+    // Attach CORS origin to every response
+    response
+        .headers_mut()
+        .set("Access-Control-Allow-Origin", &allowed)?;
+
+    Ok(response)
 }

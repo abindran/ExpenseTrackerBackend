@@ -12,7 +12,6 @@ fn json_response<T: serde::Serialize>(data: &T, status: u16) -> Result<Response>
     let body = serde_json::to_string(data).map_err(|e| Error::RustError(e.to_string()))?;
     let headers = Headers::new();
     headers.set("Content-Type", "application/json")?;
-    headers.set("Access-Control-Allow-Origin", "*")?;
     Ok(Response::ok(body)?.with_headers(headers).with_status(status))
 }
 
@@ -24,7 +23,6 @@ fn error_response(msg: &str, status: u16) -> Result<Response> {
 fn cached_json_hit(body: &str, status: u16) -> Result<Response> {
     let headers = Headers::new();
     headers.set("Content-Type", "application/json")?;
-    headers.set("Access-Control-Allow-Origin", "*")?;
     headers.set("X-Cache", "HIT")?;
     Ok(Response::ok(body)?.with_headers(headers).with_status(status))
 }

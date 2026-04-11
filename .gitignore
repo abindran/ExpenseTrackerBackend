@@ -11,3 +11,5 @@ node_modules/
 
 # Generated docs
 docs/index.html
+
+test_output.txt
