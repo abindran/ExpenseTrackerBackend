@@ -1,0 +1,10 @@
+DROP INDEX IF EXISTS idx_expense_tags_tag;
+DROP INDEX IF EXISTS idx_tags_user;
+DROP INDEX IF EXISTS idx_categories_user;
+DROP INDEX IF EXISTS idx_expenses_user_updated;
+DROP INDEX IF EXISTS idx_expenses_user_date;
+DROP TABLE IF EXISTS expense_tags;
+DROP TABLE IF EXISTS tags;
+DROP TABLE IF EXISTS expenses;
+DROP TABLE IF EXISTS categories;
+DROP TABLE IF EXISTS users;

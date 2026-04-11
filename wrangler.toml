@@ -1,0 +1,14 @@
+name = "expense-tracker-api"
+main = "build/worker/shim.mjs"
+compatibility_date = "2024-01-01"
+
+[build]
+command = "cargo install worker-build && worker-build --release"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "expense-tracker-db"
+database_id = "2bff1b4f-bcaa-4b28-874c-bc1701295d1c"
+
+[vars]
+ENVIRONMENT = "development"
