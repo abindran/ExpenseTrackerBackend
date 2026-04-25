@@ -15,13 +15,32 @@ mod routes;
 use worker::*;
 
 #[cfg(target_arch = "wasm32")]
+fn resolve_cors_origin(allowed_var: &str, request_origin: Option<&str>) -> Option<String> {
+    // ALLOWED_ORIGIN may be "*", a single origin, or a comma-separated list.
+    // Returns the value to put in Access-Control-Allow-Origin, or None if disallowed.
+    let trimmed = allowed_var.trim();
+    if trimmed == "*" {
+        return Some("*".to_string());
+    }
+    let allowed_list: Vec<&str> = trimmed.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+    match request_origin {
+        Some(origin) if allowed_list.iter().any(|a| *a == origin) => Some(origin.to_string()),
+        _ => allowed_list.first().map(|s| s.to_string()),
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
 #[event(fetch)]
 async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
-    // Read allowed origin from env — use "*" for dev, specific domain for production
-    let allowed = env
+    // Read allowed origin(s) from env — "*" for dev, single origin or comma-separated list for prod
+    let allowed_var = env
         .var("ALLOWED_ORIGIN")
         .map(|v| v.to_string())
         .unwrap_or_else(|_| "*".to_string());
+
+    let request_origin = req.headers().get("Origin").ok().flatten();
+    let allowed = resolve_cors_origin(&allowed_var, request_origin.as_deref())
+        .unwrap_or_else(|| "*".to_string());
 
     // Handle CORS preflight
     if req.method() == Method::Options {
@@ -30,6 +49,9 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         headers.set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")?;
         headers.set("Access-Control-Allow-Headers", "Content-Type, Authorization")?;
         headers.set("Access-Control-Max-Age", "86400")?;
+        if allowed != "*" {
+            headers.set("Vary", "Origin")?;
+        }
         return Ok(Response::empty()?.with_headers(headers).with_status(204));
     }
 
@@ -72,6 +94,9 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     response
         .headers_mut()
         .set("Access-Control-Allow-Origin", &allowed)?;
+    if allowed != "*" {
+        response.headers_mut().set("Vary", "Origin")?;
+    }
 
     Ok(response)
 }

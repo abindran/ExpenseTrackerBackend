@@ -40,4 +40,4 @@ id = "ba650296f5e0499ab66a99265cc383d8"
 
 [env.production.vars]
 ENVIRONMENT = "production"
-ALLOWED_ORIGIN = "https://abindran.com"
+ALLOWED_ORIGIN = "http://localhost:9000,https://abindran.com"
