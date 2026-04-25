@@ -9,8 +9,6 @@ info:
 servers:
   - url: http://localhost:8787
     description: Local dev (wrangler dev)
-  - url: https://api.abindran.com
-    description: Production (Cloudflare Workers)
 
 security:
   - clerkBearerAuth: []
