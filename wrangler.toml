@@ -25,6 +25,10 @@ ALLOWED_ORIGIN = "*"
 [env.production]
 name = "expense-tracker-api"
 
+[[env.production.routes]]
+pattern = "api.abindran.com"
+custom_domain = true
+
 [[env.production.d1_databases]]
 binding = "DB"
 database_name = "expense-tracker-db"
@@ -36,4 +40,4 @@ id = "ba650296f5e0499ab66a99265cc383d8"
 
 [env.production.vars]
 ENVIRONMENT = "production"
-ALLOWED_ORIGIN = "http://localhost:9000"
+ALLOWED_ORIGIN = "http://localhost:9000,https://abindran.com"
